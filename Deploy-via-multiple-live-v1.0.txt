@@ -1,0 +1,333 @@
+> Nutanix Console
+nx2Tech123!
+
+> Serveur Web externe to publish ISO
+BASTION=ec2-3-16-155-238.us-east-2.compute.amazonaws.com 
+ssh -A -i bastion.pem ec2-user@${BASTION}
+
+> HelperNode NUTANIX for Name Server, LB HA-Proxy, Web Server for ignition 
+BASTION=10.42.61.239
+ssh -A -i $HOME/.ssh/id_rsa ocp-user@${BASTION}
+
+> contexte
+OCP_CLUSTER=cluster-lco
+OCP_RELEASE=4.8.14
+export KUBECONFIG=$HOME/${OCP_CLUSTER}/auth/kubeconfig
+
+rm $HOME/cluster-lco -rf
+mkdir $HOME/cluster-lco
+cp install-config.yaml $HOME/cluster-lco
+cp 98-var-partition.yaml $HOME/cluster-lco
+cp 98-var-partition.bu $HOME/cluster-lco
+cd $HOME/cluster-lco
+
+> Install Binary
+# Install openshift-install 
+curl -O https://mirror.openshift.com/pub/openshift-v4/clients/ocp/${OCP_RELEASE}/openshift-install-linux-${OCP_RELEASE}.tar.gz
+tar zxvf openshift-install-linux-${OCP_RELEASE}.tar.gz -C .
+rm -f openshift-install-linux-${OCP_RELEASE}.tar.gz /usr/bin/README.md
+chmod +x openshift-install
+./openshift-install version
+
+# Install OC
+curl -O https://mirror.openshift.com/pub/openshift-v4/clients/ocp/$OCP_RELEASE/openshift-client-linux-$OCP_RELEASE.tar.gz
+tar xzf openshift-client-linux-$OCP_RELEASE.tar.gz -C . oc kubectl
+rm -f openshift-install-linux-${OCP_RELEASE}.tar.gz README.md
+which oc
+./oc completion bash | sudo tee /etc/bash_completion.d/openshift > /dev/null
+rm -f openshift-client-linux-$OCP_RELEASE.tar.gz
+./oc version
+
+# Install butane
+curl https://mirror.openshift.com/pub/openshift-v4/clients/butane/latest/butane --output butane
+chmod +x butane
+echo $PATH
+
+
+> Create Openshift configuration manifest
+./openshift-install create manifests --dir .
+# INFO Consuming Install Config from target directory
+# INFO Manifests created in: /root/cluster-lco/manifests and /root/cluster-lco/openshift
+
+> Add Ignition to manifest
+> Exemple Chrony / disk partition 
+
+# OCP >= 4.8 via butane
+./butane 98-var-partition.bu -o openshift/98-var-partition.yaml
+
+# OCP =< 4.7 via ignition
+cp 98-var-partition.yaml openshift
+
+> Convert manisfest to ignition
+
+./openshift-install create ignition-configs --dir .
+# INFO Consuming OpenShift Install (Manifests) from target directory
+# INFO Consuming Master Machines from target directory
+# INFO Consuming Common Manifests from target directory
+# INFO Consuming Openshift Manifests from target directory
+# INFO Consuming Worker Machines from target directory
+# INFO Ignition-Configs created in: . and auth
+
+> move to www
+rm /var/www/html/bootstrap.ign -f
+rm /var/www/html/master.ign -f
+rm /var/www/html/worker.ign -f
+ls /var/www/html
+
+sudo cp $HOME/${OCP_CLUSTER}/*.ign /var/www/html/
+sudo chmod o+r /var/www/html/*.ign
+sudo restorecon -vR /var/www/html/
+ls /var/www/html
+
+> check bootstrap API is up
+dig lco-bootstrap.cluster-lco.nutarh.io. 604800 IN A 10.42.61.240
+curl https://lco-bootstrap:6443 -k
+curl https://api-int.${OCP_CLUSTER}.nutarh.io:6443 -k
+
+
+> check Bootstrap machineconfig is up
+curl https://lco-bootstrap:22623/config -k
+curl https://api-int.${OCP_CLUSTER}.nutarh.io:22623/config -k
+
+> check more in detail
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/${OCP_CLUSTER}-key
+ssh -i ~/.ssh/${OCP_CLUSTER}-key core@lco-bootstrap
+
+journalctl -b -f -u release-image.service -u bootkube.service
+
+
+> check connect to apache wwww
+# tail /var/log/httpd/access_log
+# 10.42.61.240 - - [20/Jan/2022:10:02:24 -0500] "GET /bootstrap.ign HTTP/1.1" 200 267054 "-" "Ignition/2
+# 10.42.61.241 - - [20/Jan/2022:10:06:19 -0500] "GET /master.ign HTTP/1.1" 200 1723 "-" "Ignition/2.9.0".9.0"
+# 10.42.61.242 - - [20/Jan/2022:10:06:19 -0500] "GET /master.ign HTTP/1.1" 200 1723 "-" "Ignition/2.9.0"
+# 10.42.61.243 - - [20/Jan/2022:10:06:20 -0500] "GET /master.ign HTTP/1.1" 200 1723 "-" "Ignition/2.9.0"
+# 10.42.61.244 - - [20/Jan/2022:10:07:57 -0500] "GET /worker.ign HTTP/1.1" 200 1723 "-" "Ignition/2.9.0"
+# 10.42.61.245 - - [20/Jan/2022:10:07:57 -0500] "GET /worker.ign HTTP/1.1" 200 1723 "-" "Ignition/2.9.0"
+
+> check ocp4 bootstrap installation
+./openshift-install wait-for bootstrap-complete --dir=$HOME/${OCP_CLUSTER}
+# INFO Waiting up to 20m0s for the Kubernetes API at https://api.cluster-lco.nutarh.io:6443...
+# INFO API v1.21.1+a620f50 up
+# INFO Waiting up to 30m0s for bootstrapping to complete...
+
+
+tail $HOME/${OCP_CLUSTER}/.openshift_install.log -f
+# 80 done (94% complete)"
+# time="2022-01-20T10:14:27-05:00" level=debug msg="Still waiting for the cluster to initialize: Working towards 4.8.14: 656 of 680 done (96% complete)"
+# time="2022-01-20T10:14:27-05:00" level=debug msg="Still waiting for the cluster to initialize: Working towards 4.8.14: 656 of 680 done (96% complete)"
+# time="2022-01-20T10:14:27-05:00" level=debug msg="Still waiting for the cluster to initialize: Working towards 4.8.14: 656 of 680 done (96% complete)"
+# time="2022-01-20T10:14:39-05:00" level=debug msg="Still waiting for the cluster to initialize: Working towards 4.8.14: 656 of 680 done (96% complete)"
+
+./openshift-install wait-for install-complete --dir=$HOME/${OCP_CLUSTER}
+# INFO Waiting up to 40m0s for the cluster at https://api.cluster-lco.nutarh.io:6443 to initialize...
+# INFO Waiting up to 10m0s for the openshift-console route to be created...
+# INFO Install complete!
+# INFO To access the cluster as the system:admin user when using 'oc', run 'export KUBECONFIG=/root/cluster-lco/auth/kubeconfig'
+# INFO Access the OpenShift web-console here: https://console-openshift-console.apps.cluster-lco.nutarh.io
+# INFO Login to the console with user: "kubeadmin", and password: "bm9A6-LGQWL-kykJ2-np5iU"
+# INFO Time elapsed: 7m10s
+
+> check ocp4 cluster
+./oc get node
+
+> Apply and check certifats
+./oc get csr | grep -i pending
+# csr-8qfl5 41m   kubernetes.io/kube-apiserver-client-kubelet   system:serviceaccount:openshift-machine-config-operator:node-bootstrapper         Pending
+# csr-bcdrr 11m   kubernetes.io/kube-apiserver-client-kubelet   system:serviceaccount:openshift-machine-config-operator:node-bootstrapper         Pending
+# csr-mtv4v 41m   kubernetes.io/kube-apiserver-client-kubelet   system:serviceaccount:openshift-machine-config-operator:node-bootstrapper         Pending
+# csr-nr88g 26m   kubernetes.io/kube-apiserver-client-kubelet   system:serviceaccount:openshift-machine-config-operator:node-bootstrapper         Pending
+# csr-nt9d8 26m   kubernetes.io/kube-apiserver-client-kubelet   system:serviceaccount:openshift-machine-config-operator:node-bootstrapper         Pending
+# csr-p64dk 11m   kubernetes.io/kube-apiserver-client-kubelet   system:serviceaccount:openshift-machine-config-operator:node-bootstrapper         Pending
+./oc get csr | grep -i pending | cut -f 1 -d ' ' | xargs -n 1 ./oc adm certificate approve
+
+# certificatesigningrequest.certificates.k8s.io/csr-8qfl5 approved
+# certificatesigningrequest.certificates.k8s.io/csr-bcdrr approved
+# certificatesigningrequest.certificates.k8s.io/csr-mtv4v approved
+# certificatesigningrequest.certificates.k8s.io/csr-nr88g approved
+# certificatesigningrequest.certificates.k8s.io/csr-nt9d8 approved
+# certificatesigningrequest.certificates.k8s.io/csr-p64dk approved
+
+
+> Check node and operator
+./oc get node
+./oc get co
+
+
+> check deepdive
+https://docs.openshift.com/container-platform/latest/support/troubleshooting/troubleshooting-installations.html
+
+
+> (option) access ocp route on your workstation
+dns-interne=10.42.61.239
+domain=cluster-lco.nutarh.io
+sudo bash -c 'echo "nameserver 10.42.61.239" > /etc/resolver/cluster-lco.nutarh.io'
+ping lco-master0.cluster-lco.nutarh.io
+
+###########################
+#  Iso Creéation
+###########################
+
+mkdir $HOME/ISO
+cd $HOME/ISO
+
+wget https://mirror.openshift.com/pub/openshift-v4/x86_64/dependencies/rhcos/4.8/4.8.14/rhcos-4.8.14-x86_64-live.x86_64.iso
+
+wget https://mirror.openshift.com/pub/openshift-v4/clients/coreos-installer/v0.8.0-3/coreos-installer
+chmod +x coreos-installer
+./coreos-installer --version
+
+
+# Download butane ...
+...
+
+###########################
+#  Template
+###########################
+
+ISO_COREOSLIVE_CUSTOM_VERSION=v0.1
+ISO_COREOSLIVE_NODE_BASE_DOMAINE=cluster-lco.nutarh.io
+ISO_COREOSLIVE_NODE_HOSTNAME=lco-worker2
+ISO_COREOSLIVE_NODE_ROLE=worker
+ISO_COREOSLIVE_NODE_IP=10.42.61.246
+ISO_COREOSLIVE_HTTP_IGNITION=www.${ISO_COREOSLIVE_NODE_BASE_DOMAINE}:8080
+ISO_COREOSLIVE_HTTP_ISO_CUSTOM=ec2-18-219-193-4.us-east-2.compute.amazonaws.com:8080
+
+
+cat << EOF >${ISO_COREOSLIVE_NODE_HOSTNAME}.yaml
+variant: fcos
+version: 1.3.0
+storage:
+  files:
+    - path: /usr/local/bin/run-coreos-installer
+      mode: 0755
+      contents:
+        inline: |
+          #!/usr/bin/bash
+          #set -x
+          echo "********************************************************************************"
+          echo "********************************************************************************"
+          echo * ${ISO_COREOSLIVE_CUSTOM_VERSION}
+          echo "********************************************************************************"
+          echo "********************************************************************************"
+          # Call out to the installer
+          nmcli con del "Wired connection 1"
+          nmcli con add con-name ens3 type ethernet ipv4.method manual ipv4.addresses ${ISO_COREOSLIVE_NODE_IP}/25 ipv4.gateway 10.42.61.129 ipv4.dns 10.42.61.239 ipv4.dns-search "nutarh.io"
+          nmcli con up ens3
+          nmcli con show
+          sleep 3
+          echo "********************************************************************************"
+          # Call out to the installer
+          coreos-installer install /dev/sda --copy-network --ignition-file=/home/core/local-int.ign
+          echo "********************************************************************************"
+          ip a           
+          sleep 3
+          echo "********************************************************************************"
+          ip route
+          sleep 3
+          echo "********************************************************************************"
+          dig www.${ISO_COREOSLIVE_NODE_BASE_DOMAINE}
+          echo "********************************************************************************"
+          curl http://${ISO_COREOSLIVE_HTTP_IGNITION}/${ISO_COREOSLIVE_NODE_ROLE}.ign
+          sleep 3
+          echo "********************************************************************************"
+          cat /etc/NetworkManager/system-connections/ens3.nmconnection
+          sleep 3
+          echo "********************************************************************************"
+          cat /etc/resolv.conf
+          sleep 3
+          echo "********************************************************************************"
+          echo "Install Succeeded!"
+          echo "After power-off, remove RHCOS ISO and power-on."
+          sleep 3
+          echo "********************************************************************************"
+          sleep 1800
+    - path: /home/core/local-int.ign
+      mode: 0644
+      # The final master config
+      contents:
+        inline: |
+          {
+            "ignition": {
+              "config": {
+                "merge": [
+                  {
+                    "source": "http://${ISO_COREOSLIVE_HTTP_IGNITION}/${ISO_COREOSLIVE_NODE_ROLE}.ign"
+                  }
+                ]
+              },
+              "version": "3.2.0"
+            },
+            "storage": {
+              "files": [
+                {
+                  "overwrite": true,
+                  "path": "/etc/hostname",
+                  "contents": {
+                    "source": "data:,${ISO_COREOSLIVE_NODE_HOSTNAME}.${ISO_COREOSLIVE_NODE_BASE_DOMAINE}"
+                  },
+                  "mode": 420
+                },
+                {
+                  "overwrite": true,
+                  "path": "/etc/chrony.conf",
+                  "contents": {
+                    "source": "data:,server%200.europe.pool.ntp.org%20iburst%0Adriftfile%20%2Fvar%2Flib%2Fchrony%2Fdrift%0Amakestep%201.0%203%0Artcsync%0Alogdir%20%2Fvar%2Flog%2Fchrony%0A"
+                  },
+                  "mode": 420
+                }
+              ]
+            }
+          }
+systemd:
+  units:
+  - name: run-coreos-installer.service
+    enabled: true
+    contents: |
+      [Unit]
+      After=network-online.target
+      Wants=network-online.target
+      Before=systemd-user-sessions.service
+      OnFailure=emergency.target
+      OnFailureJobMode=replace-irreversibly
+      [Service]
+      RemainAfterExit=yes
+      Type=oneshot
+      ExecStart=/usr/local/bin/run-coreos-installer
+      ExecStartPost=/usr/bin/systemctl --no-block poweroff
+      StandardOutput=kmsg+console
+      StandardError=kmsg+console
+      [Install]
+      WantedBy=multi-user.target
+EOF
+
+
+###########################
+#  Create Custom ISO LiveCD
+###########################
+
+podman run -i --rm quay.io/coreos/butane:release --pretty --strict < ${ISO_COREOSLIVE_NODE_HOSTNAME}.yaml > ${ISO_COREOSLIVE_NODE_HOSTNAME}.ign
+
+./coreos-installer iso ignition embed -i ${ISO_COREOSLIVE_NODE_HOSTNAME}.ign -o rhcos-4.8.14-${ISO_COREOSLIVE_NODE_HOSTNAME}-live.iso rhcos-4.8.14-x86_64-live.x86_64.iso
+
+sudo rm /var/www/html/rhcos-4.8.14-${ISO_COREOSLIVE_NODE_HOSTNAME}-live.iso 
+sudo mv rhcos-4.8.14-${ISO_COREOSLIVE_NODE_HOSTNAME}-live.iso /var/www/html/
+sudo chmod o+r /var/www/html/rhcos-4.8.14-${ISO_COREOSLIVE_NODE_HOSTNAME}-live.iso
+sudo restorecon -vR /var/www/html/
+
+ls /var/www/html/ -al
+
+echo http://${ISO_COREOSLIVE_HTTP_ISO_CUSTOM}/rhcos-4.8.14-${ISO_COREOSLIVE_NODE_HOSTNAME}-live.iso
+
+
+####################
+# Add node +24h
+####################
+# https://access.redhat.com/solutions/4799921
+
+URL=api-int.cluster-lco.nutarh.io
+openssl s_client -connect ${URL}:22623 -showcerts </dev/null 2>/dev/null|openssl x509 -outform PEM > api-int.pem
+base64 --wrap=0 ./api-int.pem 1> ./api.int.base64
+cd /var/www/http
+cp ./worker.ign ./worker.ign.backup
