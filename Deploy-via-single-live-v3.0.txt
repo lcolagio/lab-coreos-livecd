@@ -1,0 +1,301 @@
+
+########################################
+#  Butane file
+########################################
+
+variant: fcos
+version: 1.3.0
+# passwd:
+#   users:
+#     - name: core
+#       ssh_authorized_keys:
+#         - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC7JTmIfQW22gR/lraE8s2wD7GdZJGw/3XkENKNtc2yK root@bastion-lco.nutarh.io
+#     - name: root
+#       ssh_authorized_keys:
+#         - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC7JTmIfQW22gR/lraE8s2wD7GdZJGw/3XkENKNtc2yK root@bastion-lco.nutarh.io
+storage:
+  files:
+    - path: /home/core/nodemap
+      mode: 0644
+      contents:
+        inline: |        
+          50:6b:8d:80:94:21 10.42.61.245 lco-worker1.cluster-lco.nutarh.io worker
+          50:6b:8d:8e:dd:3d 10.42.61.246 lco-worker2.cluster-lco.nutarh.io worker
+    - path: /usr/local/bin/run-coreos-installer
+      mode: 0755
+      contents:
+        inline: |
+          #!/usr/bin/bash
+          #set -x
+          
+          sudo loadkeys fr
+          
+          COLOR_RED='\033[0;31m'
+          COLOR_GREEN="\033[0;32m" 
+          COLOR_RESET='\033[0m' # No Color 
+
+          ISO_COREOSLIVE_CUSTOM_VERSION=v3.1
+          ISO_COREOSLIVE_NODE_BASE_DOMAINE=cluster-lco.nutarh.io
+          ISO_COREOSLIVE_NODE_HOSTNAME=lco-all-role
+          ISO_COREOSLIVE_NODE_ROLE=all
+          ISO_COREOSLIVE_NODE_IP=10.42.61.250
+          ISO_COREOSLIVE_HTTP_IGNITION=www.${ISO_COREOSLIVE_NODE_BASE_DOMAINE}:8080
+
+          echo "******************************************************************"
+          echo "* Version and configuration Custom CoreOS Live Image"
+          echo "******************************************************************"
+          echo "*"
+          echo "ISO_COREOSLIVE_CUSTOM_VERSION: $ISO_COREOSLIVE_CUSTOM_VERSION"
+          echo "ISO_COREOSLIVE_NODE_BASE_DOMAINE: ${ISO_COREOSLIVE_NODE_BASE_DOMAINE}"
+          echo "ISO_COREOSLIVE_NODE_HOSTNAME: ${ISO_COREOSLIVE_NODE_HOSTNAME}"
+          echo "ISO_COREOSLIVE_NODE_ROLE: ${ISO_COREOSLIVE_NODE_ROLE}"
+          echo "ISO_COREOSLIVE_NODE_IP: ${ISO_COREOSLIVE_NODE_IP}"
+          echo "ISO_COREOSLIVE_HTTP_IGNITION: ${ISO_COREOSLIVE_HTTP_IGNITION}"
+          echo "*"          
+          sleep 5    
+          
+          echo "********************************************************************************"
+          echo "* Configure temporary IP for deployement"
+          echo "********************************************************************************"
+          nmcli con del "Wired connection 1"
+          nmcli con add con-name ens3 type ethernet ipv4.method manual ipv4.addresses ${ISO_COREOSLIVE_NODE_IP}/25 ipv4.gateway 10.42.61.129 ipv4.dns 10.42.61.239 ipv4.dns-search "nutarh.io"
+          nmcli con up ens3
+          nmcli con show
+          sleep 10     
+
+          echo "********************************************************************************"
+          echo "* Show Network IP A"
+          echo "********************************************************************************"
+          ip a
+          sleep 10    
+
+          function CHECK_MAC() {
+            echo "********************************************************************************"
+            echo "* Check If MAC adress is present"
+            echo "********************************************************************************"
+            cat /home/core/nodemap
+
+            MAC=$(cat /sys/class/net/ens3/address)
+            IP=$(awk -v pat="$MAC" '$0~pat {print $2}' /home/core/nodemap)
+            HOSTNAME=$(awk -v pat="$MAC" '$0~pat {print $3}' /home/core/nodemap)
+            ROLE=$(awk -v pat="$MAC" '$0~pat {print $4}' /home/core/nodemap)
+            
+            echo "**************************************"
+            echo "* Show Node: MAC, IP, HOSTNAME, ROLE"
+            echo "**************************************"
+            echo "* MAC: $MAC"
+            echo "* IP: $IP"
+            echo "* HOSTNAME: $HOSTNAME"
+            echo "* ROLE: $ROLE"
+            sleep 1
+
+            if [ "$IP" == "" ]; then
+              echo $IP
+              echo "***************************"
+              echo -e "* ${COLOR_RED} MAC not present:KO ${COLOR_RESET}"
+              echo "***************************"
+              sleep 10
+              exit 1
+            else
+              echo "***************************"
+              echo -e "* ${COLOR_GREEN}  MAC is present: OK ${COLOR_RESET}"
+              echo "***************************"
+              echo "*"
+              echo "***************************"
+              echo "* Replace IP, HOSTNAME and ROLE with lookup values"
+              echo "***************************"
+              sed -i "s/HOSTNAME/$HOSTNAME/g;s/ROLE/$ROLE/g" /home/core/node.ign
+              sed -i "s/ISO_COREOSLIVE_HTTP_IGNITION/$ISO_COREOSLIVE_HTTP_IGNITION/g" /home/core/node.ign
+              
+            fi
+          }
+          
+          CHECK_MAC
+
+          echo "********************************************************************************"
+          echo "* Show modified ignition file"
+          echo "********************************************************************************"
+          cat /home/core/node.ign
+          sleep 10          
+          echo "********************************************************************************"
+          echo "* Configure network"
+          echo "********************************************************************************"
+          nmcli con del "ens3"
+          nmcli con add con-name ens3 type ethernet ipv4.method manual ipv4.addresses ${IP}/25 ipv4.gateway 10.42.61.129 ipv4.dns 10.42.61.239 ipv4.dns-search "nutarh.io"
+          nmcli con up ens3
+          nmcli con show
+          sleep 10
+          echo "********************************************************************************"
+          echo "* Call out to the installer"
+          echo "********************************************************************************"
+
+          cmd="coreos-installer install /dev/sda --copy-network --ignition-file=/home/core/node.ign"
+
+          if $cmd; then
+              echo "********************************************************************************"
+              echo "Install Succeeded!"
+              echo "After power-off, remove RHCOS ISO and power-on."
+              echo "********************************************************************************"
+
+              sleep 10
+              echo "*****************"
+              echo "* START DEBUG   *"
+              echo "*****************"
+              echo "********************************************************************************"
+              echo "* Show Network IP A"
+              echo "********************************************************************************"
+              ip a           
+              sleep 3
+              echo "********************************************************************************"
+              echo "* Show Network Route"
+              echo "********************************************************************************"
+              ip route
+              sleep 3
+              echo "********************************************************************************"
+              echo "* Show Network Managet configuration"
+              echo "********************************************************************************"
+              cat /etc/NetworkManager/system-connections/ens3.nmconnection
+              sleep 3
+              echo "********************************************************************************"
+              echo "* Show DIG www server for ignition"
+              echo "********************************************************************************"
+              dig www.${ISO_COREOSLIVE_NODE_BASE_DOMAINE}
+              sleep 3
+              echo "********************************************************************************"
+              echo "* Show Ignition"
+              echo "********************************************************************************"
+              curl http://${ISO_COREOSLIVE_HTTP_IGNITION}/${ROLE}.ign
+              sleep 3
+              echo "********************************************************************************"
+              echo "* Show Network Resolv"
+              echo "********************************************************************************"
+              cat /etc/resolv.conf
+              sleep 3
+              echo "*****************"
+              echo "* END DEBUG   *"
+              echo "*****************"
+              sleep 180
+              exit 0
+          else
+              sleep 10
+              echo "*****************"
+              echo "* START DEBUG   *"
+              echo "*****************"
+              echo "********************************************************************************"
+              echo "* Show Network IP A"
+              echo "********************************************************************************"
+              ip a           
+              sleep 3
+              echo "********************************************************************************"
+              echo "* Show Network Route"
+              echo "********************************************************************************"
+              ip route
+              sleep 3
+              echo "********************************************************************************"
+              echo "* Show Network Managet configuration"
+              echo "********************************************************************************"
+              cat /etc/NetworkManager/system-connections/ens3.nmconnection
+              sleep 3
+              echo "********************************************************************************"
+              echo "* Show DIG www server for ignition"
+              echo "********************************************************************************"
+              dig www.${ISO_COREOSLIVE_NODE_BASE_DOMAINE}
+              sleep 3
+              echo "********************************************************************************"
+              echo "* Show Ignition"
+              echo "********************************************************************************"
+              curl http://${ISO_COREOSLIVE_HTTP_IGNITION}/${ROLE}.ign
+              sleep 3
+              echo "********************************************************************************"
+              echo "* Show Network Resolv"
+              echo "********************************************************************************"
+              cat /etc/resolv.conf
+              sleep 3
+              echo "*****************"
+              echo "* END DEBUG   *"
+              echo "*****************"
+              sleep 180
+              exit 1
+          fi
+    - path: /home/core/node.ign
+      mode: 0644
+      # The final master config
+      contents:
+        inline: |
+          {
+            "ignition": {
+              "config": {
+                "merge": [
+                  {
+                    "source": "http://ISO_COREOSLIVE_HTTP_IGNITION/ROLE.ign"
+                  }
+                ]
+              },
+              "version": "3.2.0"
+            },
+            "storage": {
+              "files": [
+                {
+                  "overwrite": true,
+                  "path": "/etc/hostname",
+                  "contents": {
+                    "source": "data:,HOSTNAME"
+                  },
+                  "mode": 420
+                },
+                {
+                  "overwrite": true,
+                  "path": "/etc/chrony.conf",
+                  "contents": {
+                    "source": "data:,server%200.europe.pool.ntp.org%20iburst%0Adriftfile%20%2Fvar%2Flib%2Fchrony%2Fdrift%0Amakestep%201.0%203%0Artcsync%0Alogdir%20%2Fvar%2Flog%2Fchrony%0A"
+                  },
+                  "mode": 420
+                }
+              ]
+            }
+          }
+systemd:
+  units:
+  - name: run-coreos-installer.service
+    enabled: true
+    contents: |
+      [Unit]
+      After=network-online.target
+      Wants=network-online.target
+      Before=systemd-user-sessions.service
+      OnFailure=emergency.target
+      OnFailureJobMode=replace-irreversibly
+      [Service]
+      RemainAfterExit=yes
+      Type=oneshot
+      ExecStart=/usr/local/bin/run-coreos-installer
+      ExecStartPost=/usr/bin/systemctl --no-block poweroff
+      StandardOutput=kmsg+console
+      StandardError=kmsg+console
+      [Install]
+      WantedBy=multi-user.target
+
+
+########################################
+#  Create Custom ISO LiveCD
+########################################
+
+ISO_COREOSLIVE_CUSTOM_VERSION=v3.1
+ISO_COREOSLIVE_NODE_HOSTNAME=lco-all-role
+ISO_COREOSLIVE_HTTP_IGNITION=www.${ISO_COREOSLIVE_NODE_BASE_DOMAINE}:8080
+ISO_COREOSLIVE_HTTP_ISO_CUSTOM=ec2-3-16-155-238.us-east-2.compute.amazonaws.com:8080
+
+
+podman run -i --rm quay.io/coreos/butane:release --pretty --strict < ${ISO_COREOSLIVE_NODE_HOSTNAME}-${ISO_COREOSLIVE_CUSTOM_VERSION}.yaml > ${ISO_COREOSLIVE_NODE_HOSTNAME}-${ISO_COREOSLIVE_CUSTOM_VERSION}.ign
+
+./coreos-installer iso ignition embed -i ${ISO_COREOSLIVE_NODE_HOSTNAME}-${ISO_COREOSLIVE_CUSTOM_VERSION}.ign -o rhcos-4.8.14-${ISO_COREOSLIVE_NODE_HOSTNAME}-${ISO_COREOSLIVE_CUSTOM_VERSION}-live.iso rhcos-4.8.14-x86_64-live.x86_64.iso
+
+sudo rm /var/www/html/rhcos-4.8.14-${ISO_COREOSLIVE_NODE_HOSTNAME}-${ISO_COREOSLIVE_CUSTOM_VERSION}-live.iso 
+sudo mv rhcos-4.8.14-${ISO_COREOSLIVE_NODE_HOSTNAME}-${ISO_COREOSLIVE_CUSTOM_VERSION}-live.iso /var/www/html/
+sudo chmod o+r /var/www/html/rhcos-4.8.14-${ISO_COREOSLIVE_NODE_HOSTNAME}-${ISO_COREOSLIVE_CUSTOM_VERSION}-live.iso
+sudo restorecon -vR /var/www/html/
+
+ls /var/www/html/ -al
+echo http://${ISO_COREOSLIVE_HTTP_ISO_CUSTOM}/rhcos-4.8.14-${ISO_COREOSLIVE_NODE_HOSTNAME}-${ISO_COREOSLIVE_CUSTOM_VERSION}-live.iso
+
+
